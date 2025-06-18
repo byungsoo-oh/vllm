@@ -1429,10 +1429,13 @@ class LLM:
                             # Calculate tokens only for RequestOutput
                             n = len(output.outputs)
                             assert output.prompt_token_ids is not None
-                            total_in_toks += len(output.prompt_token_ids) * n
+                            in_toks = len(output.prompt_token_ids) * n
+                            total_in_toks += in_toks
                             in_spd = total_in_toks / pbar.format_dict["elapsed"]
-                            total_out_toks += sum(
+                            out_toks = sum(
                                 len(stp.token_ids) for stp in output.outputs)
+                            logger.info(f"[BS] (vllm) (updating n prompts) n: {n}, in_toks: {in_toks}, out_toks: {out_toks}")
+                            total_out_toks += out_toks
                             out_spd = (total_out_toks /
                                        pbar.format_dict["elapsed"])
                             pbar.postfix = (
@@ -1440,6 +1443,7 @@ class LLM:
                                 f"output: {out_spd:.2f} toks/s")
                             pbar.update(n)
                         else:
+                            logger.info(f"[BS] (vllm) (updating 1 prompt)")
                             pbar.update(1)
 
         if use_tqdm:

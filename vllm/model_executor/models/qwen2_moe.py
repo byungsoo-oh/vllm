@@ -101,6 +101,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
+        layer_idx: int = 0,
     ):
         super().__init__()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -136,6 +137,9 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         self.shared_expert_gate = torch.nn.Linear(config.hidden_size,
                                                   1,
                                                   bias=False)
+        self.layer_idx = layer_idx
+        self.num_experts = config.num_experts
+        self.num_experts_per_tok = config.num_experts_per_tok
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # NOTE: hidden_states can have either 1D or 2D shape.
@@ -151,6 +155,19 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
 
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
+        
+        sampling_layers = [0]
+        if self.layer_idx in sampling_layers:
+            topk_values, topk_indices = torch.topk(
+                router_logits, k=self.num_experts_per_tok, dim=-1
+            )
+            # Flatten all top-k expert indices into a single 1D tensor
+            all_topk_indices = topk_indices.flatten()  # shape: (num_tokens * k,)
+
+            # Count how many times each expert was selected
+            counts = torch.bincount(all_topk_indices, minlength=self.num_experts)
+            print(f"[BS] (vllm) (layer {self.layer_idx}) Top-k token counts per expert: {counts.tolist()}")
+
         final_hidden_states = self.experts(hidden_states=hidden_states,
                                            router_logits=router_logits)
         if shared_output is not None:
@@ -280,7 +297,8 @@ class Qwen2MoeDecoderLayer(nn.Module):
             (layer_idx + 1) % config.decoder_sparse_step == 0):
             self.mlp = Qwen2MoeSparseMoeBlock(config=config,
                                               quant_config=quant_config,
-                                              prefix=f"{prefix}.mlp")
+                                              prefix=f"{prefix}.mlp",
+                                              layer_idx=layer_idx)
         else:
             self.mlp = Qwen2MoeMLP(
                 hidden_size=config.hidden_size,
