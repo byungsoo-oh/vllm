@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from vllm.v1.request import Request, RequestStatus
-
+import torch
+import torch.distributed as dist
 
 def check_stop(request: Request, max_model_len: int) -> bool:
     if (request.num_tokens >= max_model_len
@@ -20,3 +21,14 @@ def check_stop(request: Request, max_model_len: int) -> bool:
         request.stop_reason = last_token_id
         return True
     return False
+
+def log_gpu_memory():
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    device = torch.cuda.current_device()
+
+    allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)  # in GB
+    reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)    # in GB
+
+    print(f"[BS] (gpu memory | rank {rank} | device {device}) "
+          f"allocated: {allocated:.2f} GB, reserved: {reserved:.2f} GB")
+

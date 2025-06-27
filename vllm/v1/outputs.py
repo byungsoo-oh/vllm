@@ -100,6 +100,19 @@ class ModelRunnerOutput:
     # [prompt_len]
     prompt_logprobs_dict: dict[str, Optional[LogprobsTensors]]
 
+    # layer_id -> topk_expert_indices for all tokens
+    # topk_experts_layers: dict[int, list[list[int]]] = None
+
+    # per-token layer-wise top-k expert list
+    # [{0: [1, 2, 3, 4], 10: [1, 2, 3, 4]}, {0: [2, 4, 5, 3], 10: [2, 4, 5, 3]}]
+    topk_experts_layers: list[dict[int, list[int]]] = None
+
+    # layer_id -> per-token expert choices
+    # option 1. [{layer_id: [{token_id: [expert_ids]}]}]
+    # layer_expert_ids: list[dict[int, list[dict[int, list[int]]]]] = None
+    # option 2. [{token_id: {layer_id: [expert_ids]}}]
+    # layer_expert_ids: list[dict[int, dict[int, list[int]]]]
+
 
 EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(
     req_ids=[],

@@ -216,7 +216,7 @@ class LLMEngine:
 
         # 1) Get EngineCoreOutput from the EngineCore.
         outputs = self.engine_core.get_output()
-        logger.info(f"[BS] (vllm) outputs: {outputs}")
+        # logger.info(f"[BS] (vllm) outputs: {outputs}")
 
         # 2) Process EngineCoreOutputs.
         processed_outputs = self.output_processor.process_outputs(

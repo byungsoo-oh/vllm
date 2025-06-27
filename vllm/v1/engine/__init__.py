@@ -105,6 +105,14 @@ class EngineCoreOutput(
     stop_reason: Union[int, str, None] = None
     events: Optional[list[EngineCoreEvent]] = None
 
+    # prompt_expert_ids_layer: list[dict[int, list[dict[int, list[int]]]]] = None
+    # response_expert_ids_layer: list[dict[int, list[dict[int, list[int]]]]] = None
+    # [{token_id: {layer_id: [expert_ids]}}]
+    # prompt_expert_ids_layer: list[dict[int, dict[int, list[int]]]] = None
+    # response_expert_ids_layer: list[dict[int, dict[int, list[int]]]] = None
+    expert_ids_layer: list[dict[int, dict[int, list[int]]]] = None
+    is_prefill: bool = None
+
     @property
     def finished(self) -> bool:
         return self.finish_reason is not None

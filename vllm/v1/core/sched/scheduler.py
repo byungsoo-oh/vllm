@@ -175,9 +175,14 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            # print(f"[BS] (vllm sched) request {req_index}: {vars(request)}")
+            # print(f"[BS] (vllm sched) (request {req_index} from running) request ID: {request.request_id}, num_prompt_tokens: {request.num_prompt_tokens}, len(_output_token_ids): {len(request._output_token_ids)}, num_computed_tokens: {request.num_computed_tokens}")
 
             num_new_tokens = (request.num_tokens_with_spec -
                               request.num_computed_tokens)
+            # print(f"[BS] (vllm sched) req_index: {req_index}, len(self.running): {len(self.running)}, token_budget: {token_budget}")
+            # print(f"[BS] (vllm) req_index: {req_index}, request.num_tokens_with_spec: {request.num_tokens_with_spec}, request.num_computed_tokens: {request.num_computed_tokens}, num_new_tokens: {num_new_tokens}")
+            # print(f"[BS] (vllm sched) self.scheduler_config.long_prefill_token_threshold: {self.scheduler_config.long_prefill_token_threshold}")
             if (0 < self.scheduler_config.long_prefill_token_threshold <
                     num_new_tokens):
                 num_new_tokens = (
@@ -198,6 +203,9 @@ class Scheduler(SchedulerInterface):
                  new_encoder_budget) = self._try_schedule_encoder_inputs(
                      request, request.num_computed_tokens, num_new_tokens,
                      encoder_budget)
+
+            print(f"[BS] (vllm sched) (request {req_index} from running) request ID: {request.request_id}, num_prompt_tokens: {request.num_prompt_tokens}, len(_output_token_ids): {len(request._output_token_ids)}, num_computed_tokens: {request.num_computed_tokens}")
+            print(f"[BS] (vllm sched) (request {req_index} from running) request ID: {request.request_id} -> request.num_tokens_with_spec: {request.num_tokens_with_spec}, request.num_computed_tokens: {request.num_computed_tokens}, num_new_tokens: {num_new_tokens}")
 
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
@@ -222,6 +230,7 @@ class Scheduler(SchedulerInterface):
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
                     preempted_req = self.running.pop()
+                    print(f"[BS] (vllm sched) preempting request ID: {preempted_req.request_id}, num_prompt_tokens: {preempted_req.num_prompt_tokens}, len(_output_token_ids): {len(preempted_req._output_token_ids)}, num_computed_tokens: {preempted_req.num_computed_tokens}")
                     self.kv_cache_manager.free(preempted_req)
                     preempted_req.status = RequestStatus.PREEMPTED
                     preempted_req.num_computed_tokens = 0
@@ -297,6 +306,7 @@ class Scheduler(SchedulerInterface):
                     break
 
                 request = self.waiting[0]
+                print(f"[BS] (vllm sched) (request {req_index} from waiting) request ID: {request.request_id}, num_prompt_tokens: {request.num_prompt_tokens}, len(_output_token_ids): {len(request._output_token_ids)}, num_computed_tokens: {request.num_computed_tokens}")
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
@@ -346,6 +356,8 @@ class Scheduler(SchedulerInterface):
                 num_new_tokens = min(num_new_tokens, token_budget)
                 assert num_new_tokens > 0
 
+                print(f"[BS] (vllm sched) (request {req_index} from waiting) request ID: {request.request_id}, cached: {num_computed_tokens}, external: {num_external_tokens} -> total: {num_computed_tokens + num_external_tokens}, num_new_tokens: {num_new_tokens}")
+
                 # Schedule encoder inputs.
                 if request.has_encoder_inputs:
                     (encoder_inputs_to_schedule, num_new_tokens,
@@ -387,10 +399,12 @@ class Scheduler(SchedulerInterface):
                 if self.log_stats:
                     request.record_event(EngineCoreEventType.SCHEDULED,
                                          scheduled_timestamp)
+                is_preempted_request = False
                 if request.status == RequestStatus.WAITING:
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
+                    is_preempted_request = True
                 else:
                     raise RuntimeError(
                         f"Invalid request status: {request.status}")
@@ -400,6 +414,8 @@ class Scheduler(SchedulerInterface):
                 req_to_new_block_ids[request.request_id] = [
                     b.block_id for b in computed_blocks + new_blocks
                 ]
+                if is_preempted_request:
+                    print(f"[BS] (vllm sched) (preempted -> rescheduled) num of prefill tokens to recompute due to preemption: {num_new_tokens}")
                 num_scheduled_tokens[request.request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
@@ -458,6 +474,7 @@ class Scheduler(SchedulerInterface):
                 resumed_from_preemption=True,
             ) for req in scheduled_resumed_reqs
         ]
+        print(f"[BS] (vllm sched) resumed_reqs_data: {resumed_reqs_data}")
         running_reqs_data = [
             self._make_cached_request_data(
                 req,
@@ -467,6 +484,26 @@ class Scheduler(SchedulerInterface):
                 resumed_from_preemption=False,
             ) for req in scheduled_running_reqs
         ]
+        # for req in scheduled_running_reqs:
+        #     print(f"[BS] (vllm sched) req ID {req.request_id}: {num_scheduled_tokens[req.request_id]} tokens scheduled")
+        print(f"[BS] (vllm sched) num_scheduled_tokens: {num_scheduled_tokens}")
+        # cnt_decode_tokens = sum(1 for t in num_scheduled_tokens.values() if t == 1)
+        # cnt_prefill_tokens = total_num_scheduled_tokens - cnt_decode_tokens
+        resumed_req_ids = {req.request_id for req in scheduled_resumed_reqs}
+        cnt_prefill = cnt_decode = cnt_resumed = 0
+        for req_id, t in num_scheduled_tokens.items():
+            if req_id in resumed_req_ids:
+                cnt_resumed += t
+            elif t == 1:
+                cnt_decode += 1
+            else:
+                cnt_prefill += t
+        
+        # print(f"[BS] (vllm sched) cnt_prefill_tokens: {cnt_prefill_tokens}, cnt_decode_tokens: {cnt_decode_tokens}")
+        print(f"[BS] (vllm sched) cnt_prefill: {cnt_prefill}, cnt_decode: {cnt_decode}, cnt_resumed: {cnt_resumed}")
+        print(f"[BS] (vllm sched) total_num_scheduled_tokens: {total_num_scheduled_tokens}")
+        # log_gpu_memory()
+        print(f"[BS] (vllm sched) KV cache usage: {self.kv_cache_manager.usage}")
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=resumed_reqs_data + running_reqs_data,
@@ -631,6 +668,10 @@ class Scheduler(SchedulerInterface):
         spec_token_ids = model_runner_output.spec_token_ids
         logprobs = model_runner_output.logprobs
         prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
+        topk_experts_layers = model_runner_output.topk_experts_layers
+        # print(f"[BS] (vllm.scheduler.update_from_output) len(topk_indices_layers[0]): {len(topk_indices_layers[0])}")
+        print(f"[BS] (vllm.scheduler.update_from_output) len(topk_indices_layers): {len(topk_experts_layers)}")
+        idx_begin = idx_end = 0
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
 
         new_running: list[Request] = []
@@ -650,6 +691,17 @@ class Scheduler(SchedulerInterface):
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index]
+
+            idx_end = idx_begin + num_tokens_scheduled
+            req_expert_list = topk_experts_layers[idx_begin:idx_end]
+            print(f"[BS] (vllm.scheduler.update_from_output) begin: {idx_begin}, end: {idx_end}, len(req_expert_list): {len(req_expert_list)}, req_expert_list: {req_expert_list}")
+            idx_begin = idx_end + 1
+            # if len(req_expert_list) > 1:
+            #     # [{token_id: {layer_id: [expert_ids]}}]
+            #     # prompt_expert_ids_layer[]
+            #     pass
+            # else:
+            is_prefill = True if len(req_expert_list) > 1 else False
 
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id))
@@ -719,6 +771,9 @@ class Scheduler(SchedulerInterface):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
+            print(f"[BS] (vllm.scheduler.update_from_output) prompt_logprobs_tensors for request {req_id}: {prompt_logprobs_tensors}")
+            print(f"[BS] (vllm.scheduler.update_from_output) len(logprobs[0]): {len(logprobs[0])}, len(new_logprobs[0]): {len(new_logprobs[0])}")
+            print(f"[BS] (vllm.scheduler.update_from_output) len(new_token_ids): {len(new_token_ids)}")
             if new_token_ids:
                 # Add EngineCoreOutput for this Request.
                 outputs.append(
@@ -729,7 +784,9 @@ class Scheduler(SchedulerInterface):
                         new_logprobs=new_logprobs,
                         new_prompt_logprobs_tensors=prompt_logprobs_tensors,
                         stop_reason=request.stop_reason,
-                        events=request.take_events()))
+                        events=request.take_events()),
+                        expert_ids_layer=req_expert_list,
+                        is_prefill=is_prefill)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

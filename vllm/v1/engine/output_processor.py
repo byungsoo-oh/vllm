@@ -182,6 +182,7 @@ class RequestState:
         else:
             prompt_logprobs = self.logprobs_processor.prompt_logprobs
 
+        print(f"[BS] (vllm.v1.engine.output_processor) creating RequestOutput -- request_id: {request_id}, prompt_len: {len(self.prompt_token_ids)}, num_outputs: {len(outputs)}, finished: {finished}")
         return RequestOutput(
             request_id=request_id,
             prompt=self.prompt,
@@ -210,6 +211,8 @@ class RequestState:
         logprobs = self.logprobs_processor.logprobs
         if delta and logprobs:
             logprobs = logprobs[-len(token_ids):]
+
+        print(f"[BS] (vllm.v1.engine.output_processor) creating CompletionOutput -- index: {self.request_index}, len(token_ids): {len(token_ids)}, len(logprobs): {len(logprobs)}")
 
         return CompletionOutput(
             index=self.request_index,

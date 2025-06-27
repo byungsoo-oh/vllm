@@ -1350,7 +1350,20 @@ class LLM:
                 sp.output_kind = RequestOutputKind.FINAL_ONLY
 
         # Add requests to the engine.
+        # print("[BS] (vllm.LLM._validate_and_add_requests) sorting prompts by length")
+        # response_lengths = [6809, 6452, 7189, 7068, 7088, 6315, 7210, 5876, 5815, 5005, 7817, 7438, 7850, 7699, 6289, 6581, 7541, 5359, 9242, 7744, 7172, 7694, 5183, 5852, 6025, 7022, 7055, 9047, 7568, 7104, 5710, 11475, 4220, 7434, 7469, 10454, 10129, 6263, 7633, 5751, 7061, 7083, 10664, 4631, 5686, 7937, 6134, 5397, 7027, 4481, 8659, 8131, 6818, 9325, 6287, 7260, 4270, 4643, 6302, 5673, 7964, 8036, 7547, 7252]
+        # for i, prompt in enumerate(prompts):
+        #     print(f"[BS] (vllm.LLM._validate_and_add_requests) (before sorting) i: {i}, prompt length: {len(prompt['prompt_token_ids'])}, response length: {response_lengths[i]}")
+        # prompts = [p for _, p in sorted(zip(response_lengths, prompts), key=lambda x: x[0], reverse=True)]
+        # prompts = [p for _, p in sorted(zip(response_lengths, prompts), key=lambda x: x[0])]
+        # response_lengths = sorted(response_lengths, reverse=True)
+        # response_lengths = sorted(response_lengths)
+        # prompts = sorted(prompts, key=lambda x: len(x["prompt_token_ids"]), reverse=True)
+        # print(f"[BS] (vllm.LLM._validate_and_add_requests) len(prompts): {len(prompts)}")
+        print(f"[BS] (vllm.LLM._validate_and_add_requests) sum(prompts): {sum([len(prompt['prompt_token_ids']) for prompt in prompts])}")
         for i, prompt in enumerate(prompts):
+            # print(f"[BS] (vllm.LLM._validate_and_add_requests) (before sorting) i: {i}, prompt length: {len(prompt['prompt_token_ids'])}, response length: {response_lengths[i]}")
+            print(f"[BS] (vllm.LLM._validate_and_add_requests) i: {i}, prompt length: {len(prompt['prompt_token_ids'])}, prompt: {prompt}")
             self._add_request(
                 prompt,
                 params[i] if isinstance(params, Sequence) else params,
@@ -1369,6 +1382,7 @@ class LLM:
         priority: int = 0,
     ) -> None:
         request_id = str(next(self.request_counter))
+        print(f"[BS] (vllm.LLM._add_request) request_id: {request_id}")
         self.llm_engine.add_request(
             request_id,
             prompt,
@@ -1419,8 +1433,12 @@ class LLM:
         outputs: list[Union[RequestOutput, PoolingRequestOutput]] = []
         total_in_toks = 0
         total_out_toks = 0
+        cnt_step = 0
         while self.llm_engine.has_unfinished_requests():
+            # print(f"[BS] (vllm.LLM._run_engine) step {cnt_step}")
             step_outputs = self.llm_engine.step()
+            print(f"[BS] (vllm.LLM._run_engine) (step {cnt_step}) step_outputs: {step_outputs}")
+            cnt_step += 1
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
@@ -1434,7 +1452,7 @@ class LLM:
                             in_spd = total_in_toks / pbar.format_dict["elapsed"]
                             out_toks = sum(
                                 len(stp.token_ids) for stp in output.outputs)
-                            logger.info(f"[BS] (vllm) (updating n prompts) n: {n}, in_toks: {in_toks}, out_toks: {out_toks}")
+                            print(f"[BS] (vllm) (updating n prompts) n: {n}, in_toks: {in_toks}, out_toks: {out_toks}")
                             total_out_toks += out_toks
                             out_spd = (total_out_toks /
                                        pbar.format_dict["elapsed"])
@@ -1443,7 +1461,7 @@ class LLM:
                                 f"output: {out_spd:.2f} toks/s")
                             pbar.update(n)
                         else:
-                            logger.info(f"[BS] (vllm) (updating 1 prompt)")
+                            print(f"[BS] (vllm) (updating 1 prompt)")
                             pbar.update(1)
 
         if use_tqdm:
@@ -1451,4 +1469,16 @@ class LLM:
         # Sort the outputs by request ID.
         # This is necessary because some requests may be finished earlier than
         # its previous requests.
+        # print(f"[BS] (vllm.LLM._run_engine) outputs: {outputs}")
+        # cnt_response_tokens = [[0] * (len(outputs) + 1)]
+        cnt_response_tokens = []
+        for output in outputs:
+            # print(f"[BS] (vllm.LLM._run_engine) request_id: {output.request_id}, len(output.outputs): {len(output.outputs)}")
+            # cnt_response_tokens[int(output.request_id)] = sum([len(rollout.token_ids) for rollout in output.outputs])
+            for i, rollout in enumerate(output.outputs):
+                # print(f"[BS] (vllm.LLM._run_engine) (rollout {i}) len(rollout.token_ids): {len(rollout.token_ids)}")
+                cnt_response_tokens.append(len(rollout.token_ids))
+
+        print(f"[BS] (vllm.LLM._run_engine) cnt_response_tokens: {cnt_response_tokens}")
+        print(f"[BS] (vllm.LLM._run_engine) sum(cnt_response_tokens): {sum(cnt_response_tokens)}")
         return sorted(outputs, key=lambda x: int(x.request_id))

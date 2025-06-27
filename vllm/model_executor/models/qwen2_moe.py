@@ -161,12 +161,19 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
             topk_values, topk_indices = torch.topk(
                 router_logits, k=self.num_experts_per_tok, dim=-1
             )
+            # for i, expert_indices in enumerate(topk_indices):
+            #     if i >= 5:
+            #         break
+            #     print(f"[BS] (vllm per-token routing) Token {i} -> Top-{self.num_experts_per_tok} experts: {expert_indices.tolist()}")
+
             # Flatten all top-k expert indices into a single 1D tensor
             all_topk_indices = topk_indices.flatten()  # shape: (num_tokens * k,)
 
             # Count how many times each expert was selected
             counts = torch.bincount(all_topk_indices, minlength=self.num_experts)
-            print(f"[BS] (vllm) (layer {self.layer_idx}) Top-k token counts per expert: {counts.tolist()}")
+            print(f"[BS] (vllm) (layer {self.layer_idx}) Top-k token counts per expert: {counts.tolist()}, sum: {sum(counts.tolist())}")
+        else:
+            topk_indices = None
 
         final_hidden_states = self.experts(hidden_states=hidden_states,
                                            router_logits=router_logits)
@@ -176,7 +183,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)
 
-        return final_hidden_states.view(orig_shape)
+        return final_hidden_states.view(orig_shape), topk_indices
 
 
 class Qwen2MoeAttention(nn.Module):
@@ -289,16 +296,16 @@ class Qwen2MoeDecoderLayer(nn.Module):
 
         # Note: Qwen/Qwen2-57B-A14B-Instruct does not have
         # `mlp_only_layers` in the config.
-        layer_idx = extract_layer_index(prefix)
+        self.layer_idx = extract_layer_index(prefix)
         mlp_only_layers = ([] if not hasattr(config, "mlp_only_layers") else
                            config.mlp_only_layers)
-        if (layer_idx not in mlp_only_layers) and (
+        if (self.layer_idx not in mlp_only_layers) and (
                 config.num_experts > 0 and
-            (layer_idx + 1) % config.decoder_sparse_step == 0):
+            (self.layer_idx + 1) % config.decoder_sparse_step == 0):
             self.mlp = Qwen2MoeSparseMoeBlock(config=config,
                                               quant_config=quant_config,
                                               prefix=f"{prefix}.mlp",
-                                              layer_idx=layer_idx)
+                                              layer_idx=self.layer_idx)
         else:
             self.mlp = Qwen2MoeMLP(
                 hidden_size=config.hidden_size,
@@ -332,8 +339,9 @@ class Qwen2MoeDecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual
+        # NOTE(byungsoo): topk_indices contains token-to-expert mapping for the current layer
+        hidden_states, topk_indices = self.mlp(hidden_states)
+        return hidden_states, residual, topk_indices
 
 
 @support_torch_compile
@@ -386,15 +394,18 @@ class Qwen2MoeModel(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
+        topk_indices_layers = {}
         for layer in self.layers[self.start_layer:self.end_layer]:
-            hidden_states, residual = layer(positions, hidden_states, residual)
+            hidden_states, residual, topk_indices_layer = layer(positions, hidden_states, residual)
+            if topk_indices_layer is not None:
+                topk_indices_layers[layer.layer_idx] = topk_indices_layer
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
                 "hidden_states": hidden_states,
                 "residual": residual
             })
         hidden_states, _ = self.norm(hidden_states, residual)
-        return hidden_states
+        return hidden_states, topk_indices_layers
 
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]]) -> Set[str]:
@@ -527,6 +538,7 @@ class Qwen2MoeForCausalLM(nn.Module, SupportsPP):
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        print(f"[byungsoo] input_ids: {input_ids.shape}", flush=True)
         hidden_states = self.model(input_ids, positions, intermediate_tensors,
                                    inputs_embeds)
         return hidden_states
